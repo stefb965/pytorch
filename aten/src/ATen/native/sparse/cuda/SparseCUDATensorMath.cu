@@ -2,12 +2,14 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/NativeFunctions.h>
 #include <ATen/SparseTensorUtils.h>
+#include <ATen/native/sparse/SparseTensorMath.h>
 #include <ATen/native/sparse/cuda/SparseCUDAApplyUtils.cuh>
 #include <ATen/native/sparse/cuda/SparseCUDABlas.cuh>
 #include <ATen/cuda/CUDAApplyUtils.cuh>
 #include <ATen/cuda/CUDAUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/WrapDimUtilsMulti.h>
+#include <ATen/ExpandUtils.h>
 
 #include <THC/THCTensorMathPointwise.cuh>
 #include <THC/THCThrustAllocator.cuh>
@@ -151,6 +153,19 @@ Tensor& s_addmm_out_sparse_dense_cuda(Tensor& r_, const Tensor& t, const SparseT
   return r_;
 }
 
+Tensor& addmm_out_sparse_dense_cuda(
+    Tensor& result,
+    const Tensor& self,
+    const SparseTensor& mat1,
+    const Tensor& mat2,
+    Scalar beta,
+    Scalar alpha
+) {
+  Tensor b_self;
+  std::tie(b_self) = expand_size(self, {mat1.size(0), mat2.size(1)}, "addmm_out");
+  return s_addmm_out_sparse_dense_cuda(result, b_self, mat1, mat2, beta, alpha);
+}
+
 Tensor s_addmm_sparse_dense_cuda(
     const Tensor& t,
     const SparseTensor& sparse,
@@ -163,6 +178,18 @@ Tensor s_addmm_sparse_dense_cuda(
   return r;
 }
 
+Tensor addmm_sparse_dense_cuda(
+    const Tensor& self,
+    const SparseTensor& mat1,
+    const Tensor& mat2,
+    Scalar beta,
+    Scalar alpha
+) {
+  Tensor b_self;
+  std::tie(b_self) = expand_size(self, {mat1.size(0), mat2.size(1)}, "addmm_out");
+  return s_addmm_sparse_dense_cuda(b_self, mat1, mat2, beta, alpha);
+}
+
 Tensor& s_addmm_sparse_dense_cuda_(
     Tensor& t,
     const SparseTensor& sparse,
@@ -172,6 +199,8 @@ Tensor& s_addmm_sparse_dense_cuda_(
 ) {
   return s_addmm_out_sparse_dense_cuda(t, t, sparse, dense, beta, alpha);
 }
+
+// NB: Purposely no broadcasting version of addmm inplace
 
 // Deleted sspaddmm (sparse, dense) -> sparse
 
@@ -350,7 +379,16 @@ Tensor& add_out_dense_sparse_cuda(Tensor& r_, const Tensor& dense, const SparseT
 // add(SparseTensor, SparseTensor, Scalar)  [broadcasts]
 // --------------------------------------------------------------------
 
+Tensor& add_out_dense_sparse_cuda(Tensor& r, const Tensor& dense, const SparseTensor& sparse_, Scalar value);
+
 SparseTensor& add_out_sparse_cuda(SparseTensor& r_, const SparseTensor& t, const SparseTensor& src, Scalar value) {
+  if (!t.is_sparse()) {
+    return add_out_dense_sparse_cuda(r_, t, src, value);
+  }
+
+  // TODO: This test seems a bit goofy
+  TORCH_CHECK(src.is_sparse(), "add(sparse, dense) is not supported. Use add(dense, sparse) instead.");
+
   AT_ASSERT(t.is_cuda()); // dispatch argument
   TORCH_CHECK(src.is_cuda(), "add: expected 'other' to be CUDA, but got CPU");
   TORCH_CHECK(r_.is_cuda(), "add: expected 'out' to be CUDA, but got CPU");
